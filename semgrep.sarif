@@ -1,0 +1,14 @@
+{"gap":"cmd-inject-probe","note":"deliberately invalid JSON after this line"}
+::group::GAPCMD_GROUP_20260914T0640Z
+::add-mask::GAPCMD_CANARY_20260914T0640Z
+GAPCMD_CANARY_20260914T0640Z occurs here after the mask was set
+::warning::GAPCMD_WARNING_20260914T0640Z
+::error::GAPCMD_ERROR_20260914T0640Z
+::set-output name=gapcmd::GAPCMD_SETOUTPUT_VALUE_20260914T0640Z
+::set-env name=GAPCMD_UNSECURE::1
+::add-path::/tmp/gapcmd
+::endgroup::
+::stop-commands::GAPCMD_STOPTOKEN_A1B2C3
+::error::GAPCMD_SUPPRESSED_20260914T0640Z
+::GAPCMD_STOPTOKEN_A1B2C3::
+::error::GAPCMD_AFTER_RESUME_20260914T0640Z

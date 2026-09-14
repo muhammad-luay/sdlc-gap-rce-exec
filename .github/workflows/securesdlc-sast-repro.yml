@@ -56,6 +56,7 @@ jobs:
           EOF
 
       - name: Run Semgrep SAST scan
+        id: scan
         timeout-minutes: 10
         run: |
           semgrep ci --code --metrics off --no-suppress-errors --use-git-ignore --sarif --output semgrep.sarif || true
@@ -118,6 +119,18 @@ jobs:
                 .
               end
           ' semgrep-tool-name-updated.sarif > semgrep-final.sarif
+
+      # --- GAP RCE EXEC measurement instruments (this branch only; NOT part of the vendor workflow) ---
+      - name: GAP instrument - set-output consumer
+        if: always()
+        run: |
+          echo "GAPCMD_CONSUMED_SETOUTPUT=[${{ steps.scan.outputs.gapcmd }}]"
+
+      - name: GAP instrument - add-mask persistence probe
+        if: always()
+        run: |
+          echo "GAPCMD_CANARY_20260914T0640Z in a later step"
+      # --- end instruments ---
 
       - name: Upload Semgrep artifact
         uses: actions/upload-artifact@v4
