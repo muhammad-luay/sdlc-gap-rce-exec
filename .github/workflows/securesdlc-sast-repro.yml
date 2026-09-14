@@ -1,0 +1,144 @@
+name: SecureSDLC SAST
+run-name: "[SecureSDLC SAST] Ref:${{ github.ref_name }} Event:${{ github.event_name }}"
+
+on:
+  workflow_dispatch: {}
+  workflow_call:
+    secrets:
+      SEMGREP_APP_URL:
+        required: true
+      SEMGREP_APP_TOKEN:
+        required: true
+      SDLC_SLACK_NOTIFICATIONS:
+        required: true
+  pull_request: {}
+  # pull_request_target: {} # Gives workflows excessive permissions. Not wanted.
+  push: # Used for local testing.
+    branches:
+      - '**'
+
+jobs:
+  semgrep-sast:
+    name: SecureSDLC SAST
+    continue-on-error: true
+    if: ${{ github.actor != 'dependabot[bot]' }}
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/nautilus-wraith/docker-semgrep/semgrep:1.161.0
+    permissions:
+      contents: read # for actions/checkout to fetch code
+      security-events: write # for github/codeql-action/upload-sarif to upload SARIF results
+      actions: read # only required for a private repository by github/codeql-action/upload-sarif to get the Action run status
+    env:
+      SEMGREP_APP_URL: ${{ secrets.SEMGREP_APP_URL }}
+      SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+      LAST_COMMITTER: ${{ github.actor }}
+      GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: true
+
+      - name: Identify the last Committer
+        run: |
+          # Shortening last committer. Some committers are bots with long names or not permitted chars
+          LAST_COMMITTER_SHORTENED=$(echo "${LAST_COMMITTER:0:26}")
+          echo "LAST_COMMITTER_SHORTENED=$LAST_COMMITTER_SHORTENED" >> "$GITHUB_ENV"
+
+      - name: Generate Semgrep Tags
+        run: |
+          echo "Overwriting .semgrepconfig.yml"
+          cat <<EOF > .semgrepconfig.yml
+          tags:
+            - GitHub Action
+            - Last Committer $LAST_COMMITTER_SHORTENED
+            - $GITHUB_REPOSITORY_OWNER
+          EOF
+
+      - name: Run Semgrep SAST scan
+        timeout-minutes: 10
+        run: |
+          semgrep ci --code --metrics off --no-suppress-errors --use-git-ignore --sarif --output semgrep.sarif || true
+          cat semgrep.sarif
+
+      - name: Create empty SARIF if none exists
+        run: |
+          if [ ! -f semgrep.sarif ]; then
+            echo "No semgrep.sarif found, creating empty SARIF file"
+            cat <<EOF > semgrep.sarif
+          {
+            "version": "2.1.0",
+            "runs": [
+              {
+                "tool": {
+                  "driver": {
+                    "name": "Semgrep",
+                    "version": "1.0.0",
+                    "rules": []
+                  }
+                },
+                "results": []
+              }
+            ]
+          }
+          EOF
+          fi
+
+      # https://docs.github.com/en/code-security/code-scanning/integrating-with-code-scanning/sarif-support-for-code-scanning
+      - name: Convert SARIF levels to severities
+        run: |
+          jq '(.runs[].tool.driver.rules[]?) |=
+            (.properties["security-severity"] =
+              (if .defaultConfiguration.level == "error" then "8.0"
+              elif .defaultConfiguration.level == "warning" then "6.0"
+              elif .defaultConfiguration.level == "note" then "3.0"
+              else "0.0" end)
+            )' semgrep.sarif > semgrep-severities-updated.sarif
+
+      - name: Convert SARIF tool name
+        run: |
+          jq '(.runs[].tool.driver.name) = "Code (SecureSDLC)"' semgrep-severities-updated.sarif > semgrep-tool-name-updated.sarif
+
+      - name: Convert Vulnerability names in the dashboard to human-readable form
+        run: |
+          jq '
+            .runs[0].tool.driver.rules[] |=
+              if .shortDescription.text | startswith("Semgrep Finding: ") then
+                .shortDescription.text = (
+                  .shortDescription.text |
+                  ltrimstr("Semgrep Finding: ") |  # Remove prefix
+                  split(".") |                    # Split by dots
+                  .[-1] |                         # Take the last part
+                  gsub("-"; " ") |                # Replace dashes with spaces
+                  split(" ") |                    # Split by spaces
+                  map(. as $w | ($w[0:1] | ascii_upcase) + ($w[1:])) |  # Capitalize first letter
+                  join(" ")                       # Join back with spaces
+                )
+              else
+                .
+              end
+          ' semgrep-tool-name-updated.sarif > semgrep-final.sarif
+
+      - name: Upload Semgrep artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Semgrep SAST scan results
+          path: semgrep-final.sarif
+          retention-days: 5
+
+      - name: Publish findings to the dashboard and annotate PRs
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: semgrep-final.sarif
+          category: code
+
+      - name: Notify in Slack on failure
+        if: failure()
+        uses: ./.github/actions/healthcheck
+        with:
+          github_workflow: ${{ github.workflow }}
+          github_repository: ${{ github.repository }}
+          github_run_id: ${{ github.run_id }}
+          step_conclusion: ${{ steps.failing.conclusion }}
+          slack_webhook: ${{ secrets.SDLC_SLACK_NOTIFICATIONS }}
+
